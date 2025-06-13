@@ -1,0 +1,10 @@
+DiscFactor<-(.06)
+df_sim$discounted<-37875-24375/(1+DiscFactor/4) -9000/1.06 -12500/(1.06^02)+(df_sim$Predicted_Actual-8636.03-38375)/(1.06^3)
+mean(df_sim$discounted)
+mean(df_sim$discounted)-qnorm(0.95)*sd(df_sim$discounted)/sqrt(n)
+mean(df_sim$discounted)+qnorm(0.95)*sd(df_sim$discounted)/sqrt(n)
+min(df_sim$discounted)
+max(df_sim$discounted)
+par(mfrow = c(1, 1)) 
+hist(df_sim$discounted)  
+
