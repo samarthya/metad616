@@ -286,3 +286,544 @@ ggplot(data = residential_sales) +
 sum(df_sim$discounted<0)/n  
 sum(residential_sales$discounted<0)/n  
 
+# CRAWFORD DEVELOPMENT RISK ANALYSIS - WORKING VERSION
+# Enterprise Risk Analytics for Southeast Bank of Texas
+
+# Load only essential libraries
+suppressPackageStartupMessages(
+  suppressWarnings({
+    library(dplyr)
+    library(ggplot2)
+    library(fitdistrplus)
+    library(triangle)
+  })
+)
+
+# Set seed for reproducibility
+
+set.seed(42)
+if (!dir.exists("graphs")) dir.create("graphs")
+
+# ==================== CONSTANTS ====================
+LOAN_AMOUNT <- 38375  # Loan principal in thousands # nolint
+INTEREST_RATE <- 0.07 # 7% interest rate # nolint
+LOAN_TERM <- 3 # 3-year term # nolint
+OFFICE_EXPECTED_SALES <- 65153.54 # Expected office sales (Exhibit 1) # nolint
+RESIDENTIAL_EXPECTED_SALES <- 64100 # Expected residential sales (Exhibit 2) # nolint
+SIMULATIONS <- 10000 # Monte Carlo simulations # nolint
+
+ECONOMIC_OUTLOOK_LEVELS <- c("Pessimistic", "Neutral", "Optimistic") # nolint
+
+# Sample data based on case study patterns
+set.seed(42)
+
+# ==================== DATA LOADING ====================
+# Load historical data
+historical_data <- read.csv("crawford/historical_data.csv")
+
+# Calculate economic outlook probabilities
+outlook_prob_df <- historical_data %>%
+  mutate(
+    economic_outlook = factor(
+      economic_outlook,
+      levels = ECONOMIC_OUTLOOK_LEVELS
+    )
+  ) %>%
+  count(
+    economic_outlook,
+    .drop = FALSE # .drop = FALSE ensures all levels appear
+  ) %>%
+  mutate(probability = n / sum(n))
+
+cat("Economic Outlook Probabilities:\n")
+print(dplyr::select(outlook_prob_df, economic_outlook, probability))
+
+ordered_outlook_probabilities <- setNames(
+  outlook_prob_df$probability,
+  outlook_prob_df$economic_outlook
+)
+
+# ==================== DISTRIBUTION FITTING ====================
+fit_distribution <- function(data, outlook_name) {
+  cat(
+    "\n",
+    "Fitting distributions for",
+    outlook_name,
+    "outlook (n =", length(data), "):\n"
+  )
+
+  # Test common distributions
+  distributions <- c(
+    "norm", "lnorm", "gamma", "weibull"
+  )
+
+  fits <- list()
+
+  for (dist in distributions) {
+    try({
+      fit <- fitdist(
+        data,
+        dist,
+        method = "mle" # Maximum likelihood estimation
+      )
+      fits[[dist]] <- fit
+      cat("✓", dist, " - AIC:", round(fit$aic, 2), "\n")
+    }, silent = TRUE)
+  }
+
+  # Select best distribution by AIC
+  if (length(fits) > 0) {
+
+    aics <- sapply(fits, function(x) x$aic)
+    # cat(names(aics), "\n", aics , "\n")
+
+    best_dist <- names(
+      which.min(aics)
+    )
+
+    cat("Best distribution:", best_dist, "with AIC:", round(min(aics), 2), "\n")
+
+    return(list(
+      best_distribution = best_dist,
+      fitted_params = fits[[best_dist]]$estimate
+    ))
+  } else {
+    # Fallback to normal
+    normal_fit <- fitdist(data, "norm")
+    return(list(
+      best_distribution = "norm",
+      fitted_params = normal_fit$estimate
+    ))
+  }
+}
+
+# Fit distributions for each economic outlook
+distribution_fits <- list()
+
+for (outlook in ECONOMIC_OUTLOOK_LEVELS) {
+  cat("\n", "Looking for ", outlook, " outlook...\n")
+  outlook_data <- historical_data$sales_ratio[
+    historical_data$economic_outlook == outlook
+  ]
+
+  if (length(outlook_data) > 0) {
+    distribution_fits[[outlook]] <- fit_distribution(
+      outlook_data, outlook
+    )
+  }
+}
+
+# Print fitted distribution summary
+cat("\n=== FITTED DISTRIBUTION SUMMARY ===\n")
+for (outlook in names(distribution_fits)) {
+  fit_info <- distribution_fits[[outlook]]
+  cat(outlook, "outlook: Best fit =", fit_info$best_distribution, "\n")
+  cat(
+    "  Parameters:", paste(names(fit_info$fitted_params), "=",
+      round(fit_info$fitted_params, 3),
+      collapse = ", "
+    ),
+    "\n"
+  )
+}
+
+# ==================== RANDOM SAMPLING ====================
+generate_sample <- function(dist_info, n = 1) {
+  dist_name <- dist_info$best_distribution
+  params <- dist_info$fitted_params
+
+  samples <- switch(dist_name,
+    "norm" = rnorm(n, params["mean"], params["sd"]),
+    "lnorm" = rlnorm(n, params["meanlog"], params["sdlog"]),
+    "gamma" = rgamma(n, params["shape"], params["rate"]),
+    "weibull" = rweibull(n, params["shape"], params["scale"]),
+
+    # Default fallback
+    rnorm(n, 1.0, 0.15) # Fallback to a generic normal if dist_name is unknown
+  )
+
+  return(samples)
+}
+
+# ==================== LOAN OUTCOME CALCULATION ====================
+calculate_loan_outcomes <- function(
+  realized_sales,
+  loan_amount,
+  interest_rate,
+  loan_term
+) {
+
+  total_owed <- loan_amount * (1 + interest_rate)^loan_term
+
+  if (realized_sales >= total_owed) {
+    bank_return <- total_owed - loan_amount  # Interest earned
+    crawford_return <- realized_sales - total_owed
+    loan_default <- FALSE
+  } else {
+    bank_return <- realized_sales - loan_amount  # Loss on principal
+    crawford_return <- 0
+    loan_default <- TRUE
+  }
+
+  return(list(
+    bank_return = bank_return,
+    crawford_return = crawford_return,
+    loan_default = loan_default
+  ))
+}
+
+# ==================== OFFICE PROJECT SIMULATION ====================
+simulate_office_project <- function(
+  n_simulations = SIMULATIONS,
+  current_interest_rate = INTEREST_RATE
+) {
+  cat("\nSimulating office project with", n_simulations, "iterations...\n")
+
+  results <- data.frame(
+    bank_return = numeric(n_simulations),
+    crawford_return = numeric(n_simulations),
+    loan_default = logical(n_simulations)
+  )
+
+  for (i in 1:n_simulations) {
+    # Sample economic outlook
+    outlook <- sample(
+      ECONOMIC_OUTLOOK_LEVELS, 1,
+      prob = ordered_outlook_probabilities
+    )
+
+    # Generate sales ratio from fitted distribution
+    if (outlook %in% names(distribution_fits)) {
+      dist_info <- distribution_fits[[outlook]]
+      sales_ratio <- generate_sample(dist_info, 1)
+    } else {
+      sales_ratio <- rnorm(1, 1.0, 0.1)  # Fallback
+    }
+
+    # Apply reasonable bounds
+    sales_ratio <- pmax(0.3, pmin(1.5, sales_ratio))
+    realized_sales <- OFFICE_EXPECTED_SALES * sales_ratio
+
+    # Calculate outcomes
+    loan_outcomes <- calculate_loan_outcomes(
+      realized_sales, LOAN_AMOUNT, current_interest_rate, LOAN_TERM
+    )
+
+    results$bank_return[i] <- loan_outcomes$bank_return
+    results$crawford_return[i] <- loan_outcomes$crawford_return
+    results$loan_default[i] <- loan_outcomes$loan_default
+  }
+
+  return(results)
+}
+
+# ==================== RESIDENTIAL PROJECT SIMULATIONS ====================
+simulate_residential_expected <- function(
+  n_simulations = SIMULATIONS, current_interest_rate = INTEREST_RATE
+) {
+  cat(
+    "\nSimulating residential project using expected sales ($",
+    RESIDENTIAL_EXPECTED_SALES / 1000,
+    "M)...\n"
+  )
+
+  results <- data.frame(
+    bank_return = numeric(n_simulations),
+    crawford_return = numeric(n_simulations),
+    loan_default = logical(n_simulations)
+  )
+
+  for (i in 1:n_simulations) {
+    sales_multiplier <- runif(1, 0.8, 1.2)
+    realized_sales <- RESIDENTIAL_EXPECTED_SALES * sales_multiplier
+
+    # Calculate outcomes
+    loan_outcomes <- calculate_loan_outcomes(
+      realized_sales,
+      LOAN_AMOUNT,
+      current_interest_rate,
+      LOAN_TERM
+    )
+
+    results$bank_return[i] <- loan_outcomes$bank_return
+    results$crawford_return[i] <- loan_outcomes$crawford_return
+    results$loan_default[i] <- loan_outcomes$loan_default
+  }
+
+  return(results)
+}
+
+simulate_residential_triangular <- function( # nolint
+  n_simulations = SIMULATIONS,
+  current_interest_rate = INTEREST_RATE
+) {
+  cat(
+    "\n",
+    "Simulating residential project with expert triangular distribution",
+    "...\n"
+  )
+
+  # Triangular distribution parameters from case study expert estimates
+  min_sales <- 20000    # "lucky to get $20 million"
+  mode_sales <- 42300   # "hard time breaking even"
+  max_sales <- 130000   # "nearly twice the office project"
+
+  cat(
+    "Parameters: Min =",
+    min_sales / 1000, "M,
+    Mode =", mode_sales / 1000,
+    "M, Max =",
+    max_sales / 1000, "M\n"
+  )
+
+  results <- data.frame(
+    bank_return = numeric(n_simulations),
+    crawford_return = numeric(n_simulations),
+    loan_default = logical(n_simulations)
+  )
+
+  for (i in 1:n_simulations) {
+    # Sample from triangular distribution
+    realized_sales <- rtriangle(1, a = min_sales, b = max_sales, c = mode_sales)
+
+    # Calculate outcomes
+    loan_outcomes <- calculate_loan_outcomes(
+      realized_sales, LOAN_AMOUNT,
+      current_interest_rate, LOAN_TERM
+    )
+
+    results$bank_return[i] <- loan_outcomes$bank_return
+    results$crawford_return[i] <- loan_outcomes$crawford_return
+    results$loan_default[i] <- loan_outcomes$loan_default
+  }
+
+  return(results)
+}
+
+# ==================== MAIN ANALYSIS ====================
+cat("\n=== CRAWFORD DEVELOPMENT RISK ANALYSIS ===\n")
+
+# Run simulations
+office_sim <- simulate_office_project()
+
+residential_expected_sim <- simulate_residential_expected()
+residential_triangular_sim <- simulate_residential_triangular()
+
+cat("\n=== SAMPLE OF SIMULATION RESULTS ===\n")
+cat("\n--- Office Project Simulation Sample ---\n")
+print(head(office_sim))
+cat("\n--- Residential Project (Expected Sales) Simulation Sample ---\n")
+print(head(residential_expected_sim))
+cat("\n--- Residential Project (Triangular Distribution) Simulation Sample ---\n")
+print(head(residential_triangular_sim))
+
+
+# Calculate metrics
+office_metrics <- list(
+  expected_return = mean(office_sim$bank_return),
+  default_prob = mean(office_sim$loan_default),
+  crawford_return = mean(office_sim$crawford_return),
+  return_sd = sd(office_sim$bank_return)
+)
+
+residential_expected_metrics <- list(
+  expected_return = mean(residential_expected_sim$bank_return),
+  default_prob = mean(residential_expected_sim$loan_default),
+  crawford_return = mean(residential_expected_sim$crawford_return),
+  return_sd = sd(residential_expected_sim$bank_return)
+)
+
+residential_triangular_metrics <- list(
+  expected_return = mean(residential_triangular_sim$bank_return),
+  default_prob = mean(residential_triangular_sim$loan_default),
+  crawford_return = mean(residential_triangular_sim$crawford_return),
+  return_sd = sd(residential_triangular_sim$bank_return)
+)
+
+# Print results
+cat("\n=== PROJECT COMPARISON ===\n")
+cat("Office Project:\n")
+cat("  Expected Return: $", round(office_metrics$expected_return, 0), "K\n")
+cat(
+  "  Default Probability:", round(office_metrics$default_prob * 100, 1), "%\n"
+)
+cat("  Return Volatility: $", round(office_metrics$return_sd, 0), "K\n")
+
+cat("\nResidential Project (Expected Sales $64.1M ± 20%):\n")
+cat(
+  "  Expected Return: $",
+  round(residential_expected_metrics$expected_return, 0),
+  "K\n"
+)
+cat(
+  "  Default Probability:",
+  round(residential_expected_metrics$default_prob * 100, 1),
+  "%\n"
+)
+cat(
+  "  Return Volatility: $",
+  round(residential_expected_metrics$return_sd, 0),
+  "K\n"
+)
+
+cat("\nResidential Project (Triangular: $20M-$130M, Mode $42.3M):\n")
+cat(
+  "  Expected Return: $",
+  round(residential_triangular_metrics$expected_return, 0),
+  "K\n"
+)
+cat(
+  "  Default Probability:",
+  round(residential_triangular_metrics$default_prob * 100, 1),
+  "%\n"
+)
+cat(
+  "  Return Volatility: $",
+  round(residential_triangular_metrics$return_sd, 0),
+  "K\n"
+)
+
+# ==================== INTEREST RATE OPTIMIZATION ====================
+cat("\n=== INTEREST RATE OPTIMIZATION ===\n")
+
+interest_rates <- seq(0.07, 0.11, 0.01)
+rate_results <- data.frame(
+  rate = interest_rates,
+  bank_return = numeric(length(interest_rates)),
+  acceptance_prob = numeric(length(interest_rates)),
+  expected_profit = numeric(length(interest_rates))
+)
+
+for (i in seq_along(interest_rates)) {
+  rate <- interest_rates[i]
+
+  # Quick simulation for this rate (office project)
+  quick_sim <- simulate_office_project(
+    n_simulations = SIMULATIONS, current_interest_rate = rate
+  )
+  rate_results$bank_return[i] <- mean(quick_sim$bank_return)
+
+  # Crawford's acceptance probability (decreases 25% per 1% rate increase)
+  rate_premium <- (rate - INTEREST_RATE) * 100
+  rate_results$acceptance_prob[i] <- max(0, 1 - 0.25 * rate_premium)
+
+  # Expected profit = return × acceptance probability
+  rate_results$expected_profit[i] <- rate_results$bank_return[
+    i
+  ] * rate_results$acceptance_prob[i]
+}
+
+print(head(rate_results))
+# Find optimal rate
+optimal_idx <- which.max(rate_results$expected_profit)
+optimal_rate <- rate_results$rate[optimal_idx]
+
+cat("Optimal Interest Rate:", round(optimal_rate * 100, 1), "%\n")
+cat("Expected Bank Return: $", round(
+  rate_results$bank_return[optimal_idx], 0
+), "K\n")
+cat(
+  "Acceptance Probability:",
+  round(rate_results$acceptance_prob[optimal_idx] * 100, 0),
+  "%\n"
+)
+
+# ==================== INTEREST RATE PLOT ====================
+cat("\nGenerating Interest Rate Sensitivity Plot...\n")
+
+# Prepare data for plotting acceptance probability on a comparable scale
+max_y_value <- max(rate_results$bank_return, rate_results$expected_profit, na.rm = TRUE)
+
+interest_plot <- ggplot(rate_results, aes(x = rate * 100)) +
+  geom_line(aes(y = bank_return, color = "Bank Return"), linewidth = 1.2) +
+  geom_line(aes(y = acceptance_prob * max_y_value, color = "Acceptance Prob. (scaled)"), linetype = "dashed", linewidth = 1.2) + # Scaled
+  geom_line(aes(y = expected_profit, color = "Expected Bank Profit"), linewidth = 1.5) +
+  geom_vline(xintercept = optimal_rate * 100, linetype = "dotted", color = "black", linewidth = 1) +
+  scale_y_continuous(
+    name = "Amount ($K)",
+    sec.axis = sec_axis(~ . / max_y_value, name = "Acceptance Probability") # Secondary axis for probability
+  ) +
+  scale_color_manual(values = c(
+    "Bank Return" = "blue",
+    "Acceptance Prob. (scaled)" = "red",
+    "Expected Bank Profit" = "darkgreen"
+  )) +
+  labs(
+    title = "Interest Rate Sensitivity Analysis (Office Project)",
+    subtitle = paste("Optimal Rate:", round(optimal_rate * 100, 1), "% (dotted line)"),
+    x = "Interest Rate (%)",
+    color = "Metric"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom", plot.title = element_text(face = "bold"))
+
+print(interest_plot)
+ggsave("graphs/04_interest_rate_sensitivity_p4.png", interest_plot, width = 10, height = 6, dpi = 300)
+
+# ==================== FINAL RECOMMENDATION ====================
+cat("\n=== FINAL RECOMMENDATION ===\n")
+cat("APPROVE loan with following terms:\n")
+cat("- Loan Amount: $", LOAN_AMOUNT, "K\n")
+cat("- Interest Rate:", round(optimal_rate * 100, 1), "%\n")
+cat("- Project Restriction: Office development only\n")
+cat(
+  "- Expected Bank Return: $",
+  round(office_metrics$expected_return, 0), "K\n"
+)
+cat("- Default Risk:", round(office_metrics$default_prob * 100, 1), "%\n")
+
+# Risk comparison using triangular (more conservative)
+risk_ratio <-
+  residential_triangular_metrics$default_prob / office_metrics$default_prob
+return_advantage <-
+  (
+    office_metrics$expected_return -
+    residential_triangular_metrics$expected_return
+  ) / residential_triangular_metrics$expected_return * 100
+
+cat("\n=== RISK ANALYSIS ===\n")
+cat("Comparing Office vs Residential (Triangular Distribution):\n")
+cat("- Residential has", round(risk_ratio, 1), "x higher default risk\n")
+cat("- Office has", round(return_advantage, 1), "% higher expected return\n")
+
+cat("\nRationale:\n")
+
+cat(
+  "- Office project significantly safer (",
+  round(office_metrics$default_prob * 100, 1),
+  "% vs ",
+  round(residential_triangular_metrics$default_prob * 100, 1),
+  "% default risk)\n"
+)
+
+cat("- Higher expected returns for the bank\n")
+cat(
+  "- Triangular distribution better captures 2007 mortgage crisis uncertainty\n"
+)
+cat("- Solves agency problem through project restrictions\n")
+cat("- Preserves valuable 15-year client relationship\n")
+
+# ==================== COMPARISON TABLE ====================
+cat("\n=== FINAL COMPARISON TABLE ===\n")
+comparison_data <- data.frame(
+  Project = c(
+    "Office", "Residential (Expected)", "Residential (Triangular)"
+  ),
+  Expected_Return_K = c(
+    round(office_metrics$expected_return, 0),
+    round(residential_expected_metrics$expected_return, 0),
+    round(residential_triangular_metrics$expected_return, 0)
+  ),
+  Default_Risk_Pct = c(
+    round(office_metrics$default_prob * 100, 1),
+    round(residential_expected_metrics$default_prob * 100, 1),
+    round(residential_triangular_metrics$default_prob * 100, 1)
+  ),
+  Volatility_K = c(
+    round(office_metrics$return_sd, 0),
+    round(residential_expected_metrics$return_sd, 0),
+    round(residential_triangular_metrics$return_sd, 0)
+  )
+)
+
+print(comparison_data)
