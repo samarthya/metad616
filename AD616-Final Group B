@@ -1,0 +1,287 @@
+# Crawford Development Co. Enterprise Risk Management Analysis
+# Southeast Bank of Texas Lending Decision
+
+# Load required libraries
+suppressPackageStartupMessages(
+  suppressWarnings({
+    library(ggplot2)
+    library(dplyr)
+    library(MASS)
+    library(gridExtra)
+    library(reshape2)
+    library(fitdistrplus)
+    
+  })
+)
+# Set seed for reproducible results
+set.seed(42)
+
+# ==================== DATA SETUP ====================
+
+# Historical data from Exhibit 3 (Office Projects)
+historical_data <- data.frame(
+  loan_id = 1:32,
+  stated_sales = c(66382.35, 60852.39, 65872.30, 64541.97, 73871.30, 52689.86, 63470.57, 55828.80,
+                   63972.39, 61999.35, 78151.43, 75928.84, 73195.79, 70009.95, 58471.00, 66242.29,
+                   79315.70, 60000.95, 60839.91, 65844.29, 70511.40, 49527.53, 67793.12, 72333.48,
+                   55992.65, 75956.10, 61969.04, 55875.70, 74283.09, 85382.88, 69717.37, 56725.72),
+  economic_outlook = c(-1, 0, 0, 1, 1, -1, -1, 1, 0, 1, 1, 1, -1, -1, 0, 1, 0, -1, 1, -1, -1, -1, 0, -1, 1, -1, 0, 0, 1, 0, 1, -1),
+  realized_sales = c(51302.37, 63452.49, 67932.41, 79689.09, 70408.31, 46006.15, 61575.80, 65413.68,
+                     57756.02, 72319.87, 84962.93, 82105.66, 64361.14, 64554.01, 56729.86, 76268.45,
+                     84896.93, 43384.19, 68533.78, 51601.49, 62379.33, 36775.17, 70128.14, 61806.21,
+                     68218.22, 63401.88, 60720.96, 65842.55, 78509.94, 83909.33, 87853.35, 38732.77)
+)
+
+# Current project parameters
+loan_amount <- 38375  # thousands
+interest_rate_base <- 0.07
+loan_term <- 3
+crawford_equity <- 8000
+total_project_cost <- 46375
+bank_cost_of_funds <- 0.06
+
+# Expected sales
+office_expected_sales <- 65153.54
+residential_expected_sales <- 64100  # Base case
+
+
+#expected sales -goodness fit
+expected_model1<-fitdist(historical_data$stated_sales, "norm")
+expected_model2<-fitdist(historical_data$stated_sales, "weibull")
+expected_model3<-fitdist(historical_data$stated_sales, "lnorm")
+gofstat(list(expected_model1,expected_model2,expected_model3))
+
+historical <- read.csv("SBT Loans Historical Data.csv")
+hist(historical$Stated.expected.sales)
+install.packages("fitdistrplus")
+library(fitdistrplus)
+norm_model <- fitdist(historical$Stated.expected.sales, "norm")
+binom_model <- fitdist(historical$Stated.expected.sales, "binom")
+pois_model <- fitdist(historical$Stated.expected.sales, "pois")
+lnorm_model <- fitdist(historical$Stated.expected.sales, "lnorm")
+weibull_model <- fitdist(historical$Stated.expected.sales, "weibull")
+gofstat(list(norm_model, binom_model, pois_model, lnorm_model, weibull_model))
+par(mar = c(4, 4, 2, 1))  
+plot(lnorm_model)
+lnorm_model$estimate
+hist(historical$Realized..actual..sales)
+cor(historical$Stated.expected.sales, historical$Realized..actual..sales)
+install.packages("dplyr")
+library(dplyr)
+historical_optimistic <- historical %>%
+  filter(Leading.indicator.of.economic.outlook == 1)
+historical_neutral <- historical %>%
+  filter(Leading.indicator.of.economic.outlook == 0)
+historical_pessimistic <- historical %>%
+  filter(Leading.indicator.of.economic.outlook == -1)
+cor(historical_optimistic$Stated.expected.sales, historical_optimistic$Realized..actual..sales)
+cor(historical_neutral$Stated.expected.sales, historical_neutral$Realized..actual..sales)
+cor(historical_pessimistic$Stated.expected.sales, historical_pessimistic$Realized..actual..sales)
+install.packages("ggplot2")
+library(ggplot2)
+ggplot(data = historical) +
+  geom_point(mapping = aes(x = Stated.expected.sales, y = Realized..actual..sales)) +
+  geom_smooth(mapping = aes(x = Stated.expected.sales, y = Realized..actual..sales)) +
+  xlab("Expected Sales") + ylab("Actual Sales")
+historical.lm <- lm(historical$Realized..actual..sales ~ historical$Stated.expected.sales + factor(historical$Leading.indicator.of.economic.outlook))
+summary(historical.lm)
+
+historical <- read.csv("SBT Loans Historical Data.csv")
+library(ggplot2)
+library(car)
+library(dplyr)
+library(readr)
+library(fitdistrplus)
+library(scales) 
+
+#check historical data structure
+View(historical)
+str(historical)
+summary(historical)
+
+
+#historgram of realized actual sales
+ggplot(historical, aes(x = Realized..actual..sales)) +
+  geom_histogram(binwidth = 5000, fill = "blue", color = "black") +
+  labs(title = "Distribution of Realized Actual Sales",x = "Realized Sales ($)",y = "Number of Projects") +scale_x_continuous(labels = comma) +
+  theme_minimal(base_size = 13)
+
+#regression model
+model <- lm(Realized..actual..sales ~ Stated.expected.sales + Leading.indicator.of.economic.outlook, data = historical)
+summary(model)
+
+#residual plot for regression model
+ggplot(data = data.frame(Fitted = fitted(model), Residuals = resid(model)), aes(x = Fitted, y = Residuals)) +
+  geom_point(color = "blue", alpha = 0.6) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Residual Plot of Regression Model", x = "Fitted Sales($)", y = "Residuals($)") + scale_x_continuous(labels = comma) + scale_y_continuous(labels = comma) +
+  theme_minimal(base_size = 13)
+
+#distributions to expected sales
+lnorm_model <- fitdist(historical$Stated.expected.sales, "lnorm")
+norm_model <- fitdist(historical$Stated.expected.sales, "norm")
+weibull_model <- fitdist(historical$Stated.expected.sales, "weibull")
+#compare and graphs
+gofstat(list(lnorm_model, norm_model, weibull_model))
+plot(lnorm_model)
+lnorm_model$estimate 
+
+#density plot
+ggplot() +
+  geom_density(data = historical, aes(x = Stated.expected.sales), fill = "blue", alpha = 0.4) +
+  geom_density(data = historical, aes(x = Realized..actual..sales), fill = "red", alpha = 0.4) +
+  labs(title = "Density of Expected vs Actual Sales",x = "Sales ($)", y = "Density") + scale_x_continuous(labels = comma) + scale_y_continuous(labels = scientific_format(digits = 2)) +
+  theme_minimal(base_size = 13)
+
+#Scatterplot
+ggplot(historical, aes(x = Stated.expected.sales, y = Realized..actual..sales, color = factor(Leading.indicator.of.economic.outlook))) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Expected vs Actual Sales by Economic Outlook",
+       x = "Expected Sales ($)", y = "Actual Sales ($)", color = "Outlook (-1=Pess, 0=Neutral, 1=Pos)") + 
+  scale_x_continuous(labels = comma) + scale_y_continuous(labels = comma) +
+  theme_minimal(base_size = 13)
+
+#loan acceptance
+interest_rate<- data.frame(Rate = c(7, 8, 9, 10, 11),Probability = c(1.00, 0.75, 0.50, 0.25, 0.00))
+
+ggplot(interest_rate, aes(x = factor(Rate), y = Probability)) +
+  geom_col(fill = "blue") +
+  labs(title = "Loan Acceptance Probability by Interest Rate",
+       x = "Interest Rate (%)", y = "Acceptance Probability")+ scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  theme_minimal(base_size = 13)
+
+cor(historical$Stated.expected.sales, historical$Realized..actual..sales)
+historical_optimistic <- historical %>%
+  filter(Leading.indicator.of.economic.outlook == 1)
+historical_neutral <- historical %>%
+  filter(Leading.indicator.of.economic.outlook == 0)
+historical_pessimistic <- historical %>%
+  filter(Leading.indicator.of.economic.outlook == -1)
+cor(historical_optimistic$Stated.expected.sales, historical_optimistic$Realized..actual..sales)
+cor(historical_neutral$Stated.expected.sales, historical_neutral$Realized..actual..sales)
+cor(historical_pessimistic$Stated.expected.sales, historical_pessimistic$Realized..actual..sales)
+ggplot(data = historical) +
+  geom_point(mapping = aes(x = Stated.expected.sales, y = Realized..actual..sales)) +
+  geom_smooth(mapping = aes(x = Stated.expected.sales,  y = Realized..actual..sales)) +
+  xlab("Expected Sales") + ylab("Actual Sales")
+n <- 10000
+office_model <- function(n, mean, sd) {
+  rlnorm(n, log(mean * (1 + sd^2 / mean^2)^0.5), log(1 + sd^2 / mean^2)^0.5)
+}
+expected_sim <- office_model(n, mean(historical$Stated.expected.sales), sd(historical$Stated.expected.sales))
+prob <- runif(n, 0, 1)
+indicators_sim <- ifelse(prob < 12/32, -1, ifelse(prob > 21/32, 1, 0))
+df_sim <- data.frame(Stated.expected.sales = expected_sim, Leading.indicator.of.economic.outlook = indicators_sim)
+df_sim$Predicted_Actual <- predict(model, df_sim)
+hist(df_sim$Predicted_Actual)
+mean(df_sim$Predicted_Actual)
+mean(df_sim$Predicted_Actual)-qnorm(0.95)*sd(df_sim$Predicted_Actual)/(n^0.5)
+mean(df_sim$Predicted_Actual)+qnorm(0.95)*sd(df_sim$Predicted_Actual)/(n^0.5)
+min(df_sim$Predicted_Actual)
+max(df_sim$Predicted_Actual)
+free_cash_flows <- 37875 - 24375 - 9000 - 12500
+cumulative_fcf <- 8636.03
+loan_inflow <- 38375
+df_sim$cFCF <- free_cash_flows + (df_sim$Predicted_Actual - cumulative_fcf - loan_inflow)
+hist(df_sim$cFCF)
+mean(df_sim$cFCF)
+mean(df_sim$cFCF)-qnorm(0.95)*sd(df_sim$cFCF)/sqrt(n)
+mean(df_sim$cFCF)+qnorm(0.95)*sd(df_sim$cFCF)/sqrt(n)
+min(df_sim$cFCF)
+max(df_sim$cFCF)
+
+#NPV
+DiscFactor<-(.06)
+df_sim$discounted<-37875-24375/(1+DiscFactor/4) -9000/1.06 -12500/(1.06^02)+(df_sim$Predicted_Actual-8636.03-38375)/(1.06^3)
+mean(df_sim$discounted)
+mean(df_sim$discounted)-qnorm(0.95)*sd(df_sim$discounted)/sqrt(n)
+mean(df_sim$discounted)+qnorm(0.95)*sd(df_sim$discounted)/sqrt(n)
+min(df_sim$discounted)
+max(df_sim$discounted)
+par(mfrow = c(1, 1)) 
+hist(df_sim$discounted)  
+
+#Residential Sales 
+
+max_sr_res <- 130000  
+min_sr_res <- 20000   
+ml_sr_res  <- 42300   
+
+rtri<-function(n,min,ml,max){
+  qtri<-function(U){
+    F<-(ml-min)/(max-min)
+    if(U<F) {min+(U*(max-min)*(ml-min))^.5}
+    else{max-((1-U)*(max-min)*(max-ml))^.5}
+  }
+  y<-runif(n)
+  sapply(y,qtri)
+}
+u_sale_r <- rtri(n,min_sr_res, ml_sr_res, max_sr_res)
+
+residential_sales <-data.frame(u_sale_r)
+
+mean(residential_sales$u_sale_r)
+mean(residential_sales$u_sale_r)-qnorm(0.95)*sd(residential_sales$u_sale_r)/sqrt(n)
+mean(residential_sales$u_sale_r)+qnorm(0.95)*sd(residential_sales$u_sale_r)/sqrt(n)
+min(residential_sales$u_sale_r)
+max(residential_sales$u_sale_r)
+
+#Histogram of residential sales:
+ggplot(data = residential_sales) + 
+  geom_histogram(aes(x = u_sale_r, y = ..count../n)) + 
+  xlab("Residential Sales (in thousands)") + 
+  ylab("Probability") + 
+  labs(title = "Expected Residential Project Sales") +
+  scale_x_continuous(labels = scales::comma)
+
+# Simulate construction costs 
+residential_sales$construction_costs <- rnorm(n=1000,mean=20000,sd=1000)
+
+# Plot expected construction costs as a histrogram:
+ggplot(data = residential_sales) + 
+  geom_histogram(aes(x = construction_costs, y = ..count../n)) + 
+  xlab("Construction Costs (in thousands)") + 
+  ylab("Probability") + 
+  labs(title = "Expected Construction Costs for Residential Project")
+
+# calculate cumulative FCF assuming an interest rate of 7% and 8.636 M in interest payments
+residential_sales$cFCF <- 37875 - 4375 - residential_sales$construction_costs - 9000 - 12500 + (residential_sales$u_sale_r - 8636.03 - 38375.00)
+
+# Plot Cumulative Free Cashflows as a histogram:
+ggplot(data = residential_sales) + 
+  geom_histogram(aes(x = cFCF, y = ..count../n)) + 
+  xlab("Cumulative FCF (in thousands)") + 
+  ylab("Probability") + 
+  labs(title = "Cumulative FCF for Residential Project")
+
+# 95% Summary Statistics for cumulative FCF:
+mean(residential_sales$cFCF)
+mean(residential_sales$cFCF)-qnorm(0.95)*sd(residential_sales$cFCF)/sqrt(n)
+mean(residential_sales$cFCF)+qnorm(0.95)*sd(residential_sales$cFCF)/sqrt(n)
+min(residential_sales$cFCF)
+max(residential_sales$cFCF)
+
+# Introduce discounting to the free cashflow model:
+residential_sales$discounted <- 37875 - 4375/(1+DiscFactor/4) - 
+  residential_sales$construction_costs/(1+DiscFactor/4) - 9000/1.06 - 12500/(1.06^2) + 
+  (residential_sales$u_sale_r - 8636.03 - 38375.00)/(1.06^3)
+
+#95% summary statistics:
+mean(residential_sales$discounted)
+mean(residential_sales$discounted)-qnorm(0.95)*sd(residential_sales$discounted)/sqrt(n)
+mean(residential_sales$discounted)+qnorm(0.95)*sd(residential_sales$discounted)/sqrt(n)
+max(residential_sales$discounted)
+min(residential_sales$discounted)
+
+
+# Graph histogram of NPV of resi
+ggplot(data = residential_sales) + 
+  geom_histogram(aes(x = discounted, y = ..count../n)) + 
+  xlab("Net Present Value (in thousands)") + 
+  ylab("Probability") + 
+  labs(title = "Discounted Free Cashflows for Residential Project (NPV)")
+
+#Probability NPV will be negative 
+sum(df_sim$discounted<0)/n  
+sum(residential_sales$discounted<0)/n  
